@@ -10,7 +10,6 @@ setup(
     author_email='idohaineman@gmail.com',
     keywords=['overload', 'overloading'],
     url='https://github.com/idoheinemann/python-overload',
-    download_url='https://github.com/idoheinemann/python-overload/archive/v1.0.0-beta.tar.gz',
     install_requires=[],
     classifiers=[
         'Development Status :: 4 - Beta',

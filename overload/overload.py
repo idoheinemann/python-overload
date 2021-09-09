@@ -1,4 +1,5 @@
 import inspect
+from functools import wraps
 
 __overloaded_functions = {}
 
@@ -66,8 +67,11 @@ def overload(func):
     __overloaded_functions.setdefault(name, [])
     __overloaded_functions[name].append(func)
 
-    return lambda *args, **kwargs: __get_best_match(__overloaded_functions[name], name, *args, **kwargs)(*args,
-                                                                                                         **kwargs)
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return __get_best_match(__overloaded_functions[name], name, *args, **kwargs)(*args, **kwargs)
+
+    return wrapper
 
 
 if __name__ == '__main__':
