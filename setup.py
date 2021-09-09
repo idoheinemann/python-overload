@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='overload-python',
-    version='1.0.0',
+    version='1.0.1',
     description='A Python implementation of the overload feature',
     license='Apache License 2.0',
     packages=['overload'],
