@@ -13,7 +13,7 @@ class FirstClass:
 
 class SecondClass(FirstClass):
     @override
-    def x(self, a):
+    def x(self, a: int):
         return a + 3
 
     @overload
@@ -23,8 +23,12 @@ class SecondClass(FirstClass):
 
 class ThirdClass(SecondClass):
     @override
-    def x(self, a):
+    def x(self, a: int):
         return a + 4
+
+    @overload
+    def x(self, a: float):
+        return a * 2
 
     @override
     def x(self, a, b, c):

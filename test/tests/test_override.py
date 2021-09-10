@@ -6,15 +6,16 @@ class TestOverride(unittest.TestCase):
     def test_get_defining_class(self):
         from overload.overload import get_defining_class
         a = get_defining_class(HelpClass.a)
-        self.failUnlessEqual(a, HelpClass)
+        self.assertEqual(a, HelpClass)
 
     def test_override(self):
         t = ThirdClass()
-        self.failUnlessEqual(t.x(1), 5)
-        self.failUnlessEqual(t.x(1, 2, 3), 8)
+        self.assertEqual(t.x(1), 5)
+        self.assertEqual(t.x(1.1), 2.2)
+        self.assertEqual(t.x(1, 2, 3), 8)
         x = SecondClass()
-        self.failUnlessEqual(x.x(1), 4)
+        self.assertEqual(x.x(1), 4)
         a = FirstClass()
-        self.failUnlessEqual(a.x(1), 1)
-        self.failUnlessEqual(x.x(1, 2), 3)
-        self.failUnlessEqual(x.x(1, 2, 3), 6)
+        self.assertEqual(a.x(1), 1)
+        self.assertEqual(x.x(1, 2), 3)
+        self.assertEqual(x.x(1, 2, 3), 6)
