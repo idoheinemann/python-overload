@@ -1,11 +1,62 @@
 import inspect
-from functools import wraps
+from functools import wraps, partial
 import typing
 from typing import _GenericAlias, _SpecialForm
 import collections.abc as abc_col
 import sys
 
 __overloaded_functions = {}
+
+
+def __compare_specs(f1, f2):
+    s1 = inspect.getfullargspec(f1)
+    s2 = inspect.getfullargspec(f2)
+    if len(s1.args) != len(s2.args):
+        return False
+    if type(s1.varargs) is not type(s2.varargs):
+        return False
+    if type(s1.varkw) is not type(s2.varkw):
+        return False
+    if set(s1.kwonlyargs) != set(s2.kwonlyargs):
+        return False
+    for i, v in enumerate(s1.args):
+        ann1 = f1.__annotations__.get(v)
+        if ann1 is None:
+            continue
+        ann2 = f2.__annotations__.get(s2.args[i])
+        if ann2 is None:
+            continue
+        if ann1 != ann2:
+            return False
+    return True
+
+
+def __get_meth_class_name(meth):
+    name = meth.__qualname__.rsplit('.', 1)
+    if '<locals>' in name[0] or len(name) == 1:
+        return ''
+    return name[0]
+
+
+def __get_class_that_defined_method(meth):
+    if isinstance(meth, partial):
+        return __get_class_that_defined_method(meth.func)
+    if inspect.ismethod(meth) or (
+            inspect.isbuiltin(meth) and getattr(meth, '__self__', None) is not None and getattr(meth.__self__,
+                                                                                                '__class__', None)):
+        for cls in inspect.getmro(meth.__self__.__class__):
+            if meth.__name__ in cls.__dict__:
+                return cls
+        meth = getattr(meth, '__func__', meth)  # fallback to __qualname__ parsing
+    if inspect.isfunction(meth):
+        cls = getattr(inspect.getmodule(meth), __get_meth_class_name(meth), None)
+        if isinstance(cls, type):
+            return cls
+    return getattr(meth, '__objclass__', None)  # handle special descriptor objects
+
+
+def get_defining_class(meth):
+    return __get_class_that_defined_method(meth)
 
 
 def __func_name(func):
@@ -20,21 +71,21 @@ __SINGLE_ATTR_DICT = {
     abc_col.Iterator: '__next__',  # cannot check iterator without destroying it
 }
 
-__type_var_dict = {}
-
 
 # must be cleaned after every use of __recursive_check_match
 
-def __recursive_check_match(obj, type_var) -> bool:
+def __recursive_check_match(obj, type_var, type_var_dict=None) -> bool:
+    if type_var_dict is None:
+        type_var_dict = {}
     if type_var in {Ellipsis, typing.Any}:
         # everything matches ellipsis (...) and Any
         return True
     if type(type_var) != _GenericAlias:
         if isinstance(type_var, typing.TypeVar):
-            __type_var_dict.setdefault(type_var, type(obj))
-            return __recursive_check_match(obj, __type_var_dict[type_var])
+            type_var_dict.setdefault(type_var, type(obj))
+            return __recursive_check_match(obj, type_var_dict[type_var], type_var_dict)
         if hasattr(type_var, '__supertype__'):
-            return __recursive_check_match(obj, type_var.__supertype__)
+            return __recursive_check_match(obj, type_var.__supertype__, type_var_dict)
         try:
             return isinstance(obj, type_var)
         except TypeError:
@@ -48,7 +99,7 @@ def __recursive_check_match(obj, type_var) -> bool:
                 # not cause damage to the program
                 return True
             for val in obj:
-                if not __recursive_check_match(val, args[0]):
+                if not __recursive_check_match(val, args[0], type_var_dict):
                     return False
             return True
         return False
@@ -59,7 +110,7 @@ def __recursive_check_match(obj, type_var) -> bool:
             if len(args) != len(obj):
                 return False
             for i, val in enumerate(obj):
-                if not __recursive_check_match(val, args[i]):
+                if not __recursive_check_match(val, args[i], type_var_dict):
                     return False
             return True
         return False
@@ -68,15 +119,15 @@ def __recursive_check_match(obj, type_var) -> bool:
             if type(obj) is not dict:
                 return True
             for key, val in obj.items():
-                if not __recursive_check_match(key, args[0]):
+                if not __recursive_check_match(key, args[0], type_var_dict):
                     return False
-                if not __recursive_check_match(val, args[1]):
+                if not __recursive_check_match(val, args[1], type_var_dict):
                     return False
             return True
         return False
     if base_class is typing.Union:
         for i in args:
-            if __recursive_check_match(obj, i):
+            if __recursive_check_match(obj, i, type_var_dict):
                 return True
         return False
     if hasattr(typing, 'Literal') and base_class is typing.Literal:
@@ -97,7 +148,7 @@ def __recursive_check_match(obj, type_var) -> bool:
         if type(obj) in {list, tuple, dict, set}:
             # known iterables that can be iterated through without causing damage
             for val in obj:
-                if not __recursive_check_match(val, args[0]):
+                if not __recursive_check_match(val, args[0], type_var_dict):
                     return False
             return True
         # cannot check iterable type without causing damage
@@ -107,7 +158,7 @@ def __recursive_check_match(obj, type_var) -> bool:
             if type(obj) is not set:
                 return True
             for val in obj:
-                if not __recursive_check_match(val, args[0]):
+                if not __recursive_check_match(val, args[0], type_var_dict):
                     return False
             return True
         return False
@@ -129,9 +180,9 @@ def __recursive_check_match(obj, type_var) -> bool:
         if type(obj) is dict:
             # only known safe mapping type
             for key, val in obj.items():
-                if not __recursive_check_match(key, args[0]):
+                if not __recursive_check_match(key, args[0], type_var_dict):
                     return False
-                if not __recursive_check_match(val, args[1]):
+                if not __recursive_check_match(val, args[1], type_var_dict):
                     return False
             return True
         # cannot check mapping type without causing damage
@@ -140,7 +191,7 @@ def __recursive_check_match(obj, type_var) -> bool:
         if type(obj) in {list, tuple, dict}:
             # known sequences that can be iterated through without causing damage
             for val in obj:
-                if not __recursive_check_match(val, args[0]):
+                if not __recursive_check_match(val, args[0], type_var_dict):
                     return False
             return True
         # cannot check iterable type without causing damage
@@ -244,12 +295,50 @@ def __get_best_match(lst, name, *args, **kwargs):
 
 def overload(func):
     name = __func_name(func)
-    __overloaded_functions.setdefault(name, [])
-    __overloaded_functions[name].append(func)
+    __overloaded_functions.setdefault(name, set())
+    if func not in __overloaded_functions[name]:
+        __overloaded_functions[name].add(func)
 
     @wraps(func)
     def wrapper(*args, **kwargs):
         return __get_best_match(__overloaded_functions[name], name, *args, **kwargs)(*args, **kwargs)
+
+    return wrapper
+
+
+def override(func):
+    name = __func_name(func)
+    first_run = True
+    if __get_meth_class_name(func) == '':
+        raise SyntaxError(f'function {name} is not a method and cannot be overriden')
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        nonlocal first_run, func
+        if first_run:
+            first_run = False
+            base_class: typing.Optional[type] = __get_class_that_defined_method(func)
+            # cannot find base class, continue as usual
+            if base_class is None:
+                return func(*args, **kwargs)
+            override_not_found = True
+            overload_not_found = True
+            for cls in base_class.mro():
+                if func.__name__ in cls.__dict__:
+                    derived_name = __func_name(cls.__dict__[func.__name__])
+                    if derived_name in __overloaded_functions:
+                        if overload_not_found:
+                            override_not_found = False
+                            __overloaded_functions.setdefault(name, {func})
+                        for f in __overloaded_functions[derived_name]:
+                            if not __compare_specs(f, func):
+                                __overloaded_functions[name].add(f)
+            if not overload_not_found:
+                func = overload(func)
+
+            if override_not_found:
+                raise SyntaxError(f'function {name} is not overriden, yet declared as such')
+        return func(*args, **kwargs)
 
     return wrapper
 
