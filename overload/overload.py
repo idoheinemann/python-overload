@@ -6,7 +6,7 @@ import collections.abc as abc_col
 import sys
 
 __overloaded_functions = {}
-__override_queue = set()
+__override_queue = {}
 
 
 def __compare_specs(f1, f2):
@@ -310,8 +310,9 @@ def overload(func):
 
 def __override_resolve(name):
     # doing it lazy because when done not lazy, class does not exist because it hasn't finished loading yet
-    __override_queue.remove(name)
-    func = __overloaded_functions[name]
+
+    func = __override_queue[name]
+    del __override_queue[name]
     if len(func) == 0:
         return
     first_func = next(iter(func))
@@ -347,7 +348,8 @@ def override(func):
     if __get_meth_class_name(func) == '':
         raise SyntaxError(f'function {name} is not a method and cannot be overriden')
 
-    __override_queue.add(name)
+    __override_queue.setdefault(name, set())
+    __override_queue[name].add(func)
     # must overload to put this function in the overloaded set
 
     return overload(func)
