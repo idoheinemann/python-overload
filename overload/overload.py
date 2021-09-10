@@ -200,7 +200,7 @@ def __recursive_check_match(obj, type_var, type_var_dict=None) -> bool:
     if base_class in __SINGLE_ATTR_DICT:
         return hasattr(obj, __SINGLE_ATTR_DICT[base_class])
     print(f'type {base_class} has no implemented way of checking it, to resolve'
-          f' this you may submit an issue in https://github.com/idoheinemann/python-overload/issues')
+          f' this you may submit an issue in https://github.com/idoheinemann/python-overload/issues', file=sys.stderr)
 
 
 def __get_best_match(lst, name, *args, **kwargs):
