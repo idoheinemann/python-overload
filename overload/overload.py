@@ -342,6 +342,8 @@ def __override_resolve(name):
 
 def override(func):
     name = __func_name(func)
+    if '<locals>' in func.__qualname__:
+        raise SyntaxError(f'method {name} is declared within a function so it cannot be overriden')
     if __get_meth_class_name(func) == '':
         raise SyntaxError(f'function {name} is not a method and cannot be overriden')
 
