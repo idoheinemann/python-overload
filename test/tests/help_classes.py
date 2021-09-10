@@ -16,6 +16,20 @@ class SecondClass(FirstClass):
     def x(self, a):
         return a + 3
 
+    @overload
+    def x(self, a, b, c):
+        return a + b + c
+
+
+class ThirdClass(SecondClass):
+    @override
+    def x(self, a):
+        return a + 4
+
+    @override
+    def x(self, a, b, c):
+        return a + b + c + 2
+
 
 class HelpClass:
     def a(self, x):

@@ -6,6 +6,7 @@ import collections.abc as abc_col
 import sys
 
 __overloaded_functions = {}
+__override_queue = set()
 
 
 def __compare_specs(f1, f2):
@@ -296,51 +297,58 @@ def __get_best_match(lst, name, *args, **kwargs):
 def overload(func):
     name = __func_name(func)
     __overloaded_functions.setdefault(name, set())
-    if func not in __overloaded_functions[name]:
-        __overloaded_functions[name].add(func)
+    __overloaded_functions[name].add(func)
 
     @wraps(func)
     def wrapper(*args, **kwargs):
+        if name in __override_queue:
+            __override_resolve(name)
         return __get_best_match(__overloaded_functions[name], name, *args, **kwargs)(*args, **kwargs)
 
     return wrapper
 
 
+def __override_resolve(name):
+    # doing it lazy because when done not lazy, class does not exist because it hasn't finished loading yet
+    __override_queue.remove(name)
+    func = __overloaded_functions[name]
+    if len(func) == 0:
+        return
+    first_func = next(iter(func))
+    # some things are the same for all funcs, so we will use the first
+    base_class: typing.Optional[type] = __get_class_that_defined_method(first_func)
+    # cannot find base class, continue as usual
+    if base_class is None:
+        return
+    override_not_found = True
+    for cls in base_class.mro()[1:]:  # skipping this class, as it is first in the mro
+        if first_func.__name__ in cls.__dict__:  # all funcs have the same name
+            override_not_found = False
+            derived_name = __func_name(cls.__dict__[first_func.__name__])
+            if derived_name in __override_queue:
+                __override_resolve(derived_name)
+
+            if derived_name in __overloaded_functions:
+                for f in __overloaded_functions[derived_name]:
+                    for f2 in func:
+                        if __compare_specs(f, f2):
+                            break
+                    else:
+                        __overloaded_functions[name].add(f)
+
+    if override_not_found:
+        raise SyntaxError(f'function {name} is not overriden, yet declared as such')
+
+
 def override(func):
     name = __func_name(func)
-    first_run = True
     if __get_meth_class_name(func) == '':
         raise SyntaxError(f'function {name} is not a method and cannot be overriden')
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        nonlocal first_run, func
-        if first_run:
-            first_run = False
-            base_class: typing.Optional[type] = __get_class_that_defined_method(func)
-            # cannot find base class, continue as usual
-            if base_class is None:
-                return func(*args, **kwargs)
-            override_not_found = True
-            overload_not_found = True
-            for cls in base_class.mro():
-                if func.__name__ in cls.__dict__:
-                    derived_name = __func_name(cls.__dict__[func.__name__])
-                    if derived_name in __overloaded_functions:
-                        if overload_not_found:
-                            override_not_found = False
-                            __overloaded_functions.setdefault(name, {func})
-                        for f in __overloaded_functions[derived_name]:
-                            if not __compare_specs(f, func):
-                                __overloaded_functions[name].add(f)
-            if not overload_not_found:
-                func = overload(func)
+    __override_queue.add(name)
+    # must overload to put this function in the overloaded set
 
-            if override_not_found:
-                raise SyntaxError(f'function {name} is not overriden, yet declared as such')
-        return func(*args, **kwargs)
-
-    return wrapper
+    return overload(func)
 
 
 if __name__ == '__main__':
