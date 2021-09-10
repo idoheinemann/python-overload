@@ -2,13 +2,13 @@ from setuptools import setup
 
 setup(
     name='overload-python',
-    version='1.0.1',
+    version='2.0.0',
     description='A Python implementation of the overload feature',
     license='Apache License 2.0',
     packages=['overload'],
     author='Ido Heinemann',
     author_email='idohaineman@gmail.com',
-    keywords=['overload', 'overloading'],
+    keywords=['overload', 'overloading', 'polymorphism'],
     url='https://github.com/idoheinemann/python-overload',
     install_requires=[],
     classifiers=[
