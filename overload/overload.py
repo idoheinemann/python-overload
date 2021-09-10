@@ -1,5 +1,9 @@
 import inspect
 from functools import wraps
+import typing
+from typing import _GenericAlias, _SpecialForm
+import collections.abc as abc_col
+import sys
 
 __overloaded_functions = {}
 
@@ -9,30 +13,165 @@ def __func_name(func):
     return name
 
 
+__SINGLE_ATTR_DICT = {
+    abc_col.Sized: '__len__',
+    abc_col.Awaitable: '__await__',
+    abc_col.Hashable: '__hash__',
+    abc_col.Iterator: '__next__',  # cannot check iterator without destroying it
+}
+
+__type_var_dict = {}
+
+
+# must be cleaned after every use of __recursive_check_match
+
+def __recursive_check_match(obj, type_var) -> bool:
+    if type_var in {Ellipsis, typing.Any}:
+        # everything matches ellipsis (...) and Any
+        return True
+    if type(type_var) != _GenericAlias:
+        if isinstance(type_var, typing.TypeVar):
+            __type_var_dict.setdefault(type_var, type(obj))
+            return __recursive_check_match(obj, __type_var_dict[type_var])
+        if hasattr(type_var, '__supertype__'):
+            return __recursive_check_match(obj, type_var.__supertype__)
+        try:
+            return isinstance(obj, type_var)
+        except TypeError:
+            return False
+    base_class = type_var.__origin__
+    args = type_var.__args__
+    if base_class is list:
+        if isinstance(obj, list):
+            if type(obj) is not list:
+                # something that inherits from list passed, we cannot be sure that iterating through it will
+                # not cause damage to the program
+                return True
+            for val in obj:
+                if not __recursive_check_match(val, args[0]):
+                    return False
+            return True
+        return False
+    if base_class is tuple:
+        if isinstance(obj, tuple):
+            if type(obj) is not tuple or len(args) == 0:
+                return True
+            if len(args) != len(obj):
+                return False
+            for i, val in enumerate(obj):
+                if not __recursive_check_match(val, args[i]):
+                    return False
+            return True
+        return False
+    if base_class is dict:
+        if isinstance(obj, dict):
+            if type(obj) is not dict:
+                return True
+            for key, val in obj.items():
+                if not __recursive_check_match(key, args[0]):
+                    return False
+                if not __recursive_check_match(val, args[1]):
+                    return False
+            return True
+        return False
+    if base_class is typing.Union:
+        for i in args:
+            if __recursive_check_match(obj, i):
+                return True
+        return False
+    if hasattr(typing, 'Literal') and base_class is typing.Literal:
+        # Literal may not have been added to the typing module
+        for i in args:
+            if i == obj:
+                # may cause problems if obj.__eq__ or has been overridden to cause damage
+                return True
+        return False
+    if base_class is type:
+        if not isinstance(obj, type):
+            return False
+        try:
+            return issubclass(obj, args[0])
+        except TypeError:
+            return False
+    if base_class is abc_col.Iterable:
+        if type(obj) in {list, tuple, dict, set}:
+            # known iterables that can be iterated through without causing damage
+            for val in obj:
+                if not __recursive_check_match(val, args[0]):
+                    return False
+            return True
+        # cannot check iterable type without causing damage
+        return hasattr(obj, '__iter__')
+    if base_class is set:
+        if isinstance(obj, set):
+            if type(obj) is not set:
+                return True
+            for val in obj:
+                if not __recursive_check_match(val, args[0]):
+                    return False
+            return True
+        return False
+    if base_class is abc_col.Callable:
+        if len(args) == 0:
+            return hasattr(obj, '__call__')
+        if obj.__annotations__.get('return') is not None and obj.__annotations__['return'] != args[1]:
+            return False
+        if args[0] is Ellipsis:
+            return True
+        specs = inspect.getfullargspec(obj)
+        if len(specs.args) != len(args[0]):
+            return False
+        for idx, i in enumerate(specs.args):
+            if obj.__annotations__.get(i) is not None and obj.__annotations__[i] != args[0][idx]:
+                return False
+        return True
+    if base_class is abc_col.Mapping:
+        if type(obj) is dict:
+            # only known safe mapping type
+            for key, val in obj.items():
+                if not __recursive_check_match(key, args[0]):
+                    return False
+                if not __recursive_check_match(val, args[1]):
+                    return False
+            return True
+        # cannot check mapping type without causing damage
+        return hasattr(obj, '__getitem__')
+    if base_class is abc_col.Sequence:
+        if type(obj) in {list, tuple, dict}:
+            # known sequences that can be iterated through without causing damage
+            for val in obj:
+                if not __recursive_check_match(val, args[0]):
+                    return False
+            return True
+        # cannot check iterable type without causing damage
+        return hasattr(obj, '__getitem__') and hasattr(obj, '__len__')
+    if base_class in __SINGLE_ATTR_DICT:
+        return hasattr(obj, __SINGLE_ATTR_DICT[base_class])
+    print(f'type {base_class} has no implemented way of checking it, to resolve'
+          f' this you may submit an issue in https://github.com/idoheinemann/python-overload/issues')
+
+
 def __get_best_match(lst, name, *args, **kwargs):
     nominated = []
     for func in lst:
         specs = inspect.getfullargspec(func)
-        func_args = specs.args
-        kw_name = specs.varkw
-        args_list = specs.varargs
         defaults = specs.defaults
         defaults = 0 if defaults is None else len(defaults)
         to_continue = False
-        if len(func_args) - defaults > len(args) + len(kwargs):  # not enough arguments
+        if len(specs.args) - defaults > len(args) + len(kwargs):  # not enough arguments
             continue
-        if kw_name is None:  # check for non existing argument
+        if specs.varkw is None:  # check for non existing argument
             for i in kwargs:
-                if i not in func_args and i not in specs.kwonlyargs:
+                if i not in specs.args and i not in specs.kwonlyargs:
                     to_continue = True
                     break
             if to_continue:
                 continue
-        if args_list is None:
-            if len(args) > len(func_args):  # too many arguments
+        if specs.varargs is None:
+            if len(args) > len(specs.args):  # too many arguments
                 continue
-        if args_list is None or len(args) <= len(func_args):
-            filled_args = func_args[len(args):]
+        if specs.varargs is None or len(args) <= len(specs.args):
+            filled_args = specs.args[len(args):]
             for idx, i in enumerate(filled_args):  # unfilled argument
                 if idx >= len(filled_args) - defaults:  # arguments with default value can be unfilled
                     break
@@ -43,22 +182,63 @@ def __get_best_match(lst, name, *args, **kwargs):
             filled_args = []
         if to_continue:
             break
-        if kw_name is None and args_list is None:
-            default_vars = func_args[len(func_args) - defaults:]
+        if specs.varkw is None and specs.varargs is None:
+            default_vars = specs.args[len(specs.args) - defaults:]
             filled_twice = 0
             for i in kwargs:
                 if i in default_vars:
                     filled_twice += 1
-            if len(args) > len(func_args) - defaults:
-                filled_twice += len(args) - len(func_args) + defaults
-            if len(func_args) != len(args) + len(kwargs) - filled_twice:  # amount of arguments not ok
+            if len(args) > len(specs.args) - defaults:
+                filled_twice += len(args) - len(specs.args) + defaults
+            if len(specs.args) != len(args) + len(kwargs) - filled_twice:  # amount of arguments not ok
                 continue
 
         nominated.append(func)
     if len(nominated) == 0:
         raise AttributeError(f"no implementation of '{name}' matches given arguments")
     if len(nominated) > 1:
-        raise AttributeError(f"too many possible implementations of {name} match the given arguments")
+        best_score = -1
+        best_amount = 0
+        best_func = None
+        for f in nominated:
+            score = 0
+            specs = inspect.getfullargspec(f)
+            for i, n in enumerate(specs.args):
+                ann = f.__annotations__.get(n)
+                if ann is None:
+                    continue
+                if len(args) > i:  # variable in args
+                    if __recursive_check_match(args[i], ann):
+                        score += 1
+                elif n in kwargs:
+                    if __recursive_check_match(kwargs[n], ann):
+                        score += 1
+            if f.__annotations__.get(specs.varargs) is not None:
+                if __recursive_check_match(args[len(specs.args):], f.__annotations__[specs.varargs]):
+                    score += 1
+            if f.__annotations__.get(specs.varkw) is not None:
+                kwcopy = {}
+                for i in kwargs:
+                    if i not in specs.args and i not in specs.kwonlyargs:
+                        kwcopy[i] = kwargs[i]
+                if __recursive_check_match(kwcopy, f.__annotations__[specs.varkw]):
+                    score += 1
+            for n in specs.kwonlyargs:
+                ann = f.__annotations__.get(n)
+                if ann is None:
+                    continue
+                elif n in kwargs:
+                    if __recursive_check_match(kwargs[n], ann):
+                        score += 1
+            if score == best_score:
+                best_amount += 1
+            elif score > best_score:
+                best_amount = 1
+                best_score = score
+                best_func = f
+        if best_amount > 1 or best_func is None:
+            raise AttributeError(f"too many possible implementations of {name} match the given arguments")
+        return best_func
     return nominated[0]
 
 
@@ -117,6 +297,25 @@ if __name__ == '__main__':
             self.__init__(x, 0)
 
 
+    @overload
+    def t(v: int):
+        return f'int{v}'
+
+
+    @overload
+    def t(v: float):
+        return f'float{v}'
+
+
+    @overload
+    def t(v: typing.List[typing.Union[int, float]]):
+        return f'list{v}'
+
+
+    print(t(7))
+    print(t(5.2))
+    print(t([1, 2, 5.5]))
+
     b1 = B(1)
     b2 = B(5, 6)
 
@@ -127,4 +326,5 @@ if __name__ == '__main__':
     a = A()
     print(a.m(1, 2, 3, 4))
     print(a.m(1))
+
     # print(a.m(10, c=5))
